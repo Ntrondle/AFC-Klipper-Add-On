@@ -234,11 +234,15 @@ class AFCExtruderStepper:
         # 2) Start the respooler spinning backward
         self.assist(pwm_val)
 
+        # Initialize rpm variables
+        wheel_rpm = 0.0
+        motor_rpm = 0.0
+
         # 3) Capture baseline RPM (wait for free spin above min RPM)
         start_time = self.reactor.monotonic()
         baseline_rpm = None
         while (self.reactor.monotonic() - start_time) < 2.0:
-            wheel_rpm, _ = sensor.get_rpm()
+            wheel_rpm, motor_rpm = sensor.get_rpm()
             if wheel_rpm is not None and wheel_rpm > self.tension_baseline_min_rpm:
                 baseline_rpm = wheel_rpm
                 break
@@ -252,12 +256,14 @@ class AFCExtruderStepper:
         # 4) Continue rewinding until RPM < baseline * drop_fraction
         cutoff = baseline_rpm * self.tension_drop_fraction
         while (self.reactor.monotonic() - start_time) < self.tension_max_time:
-            wheel_rpm, _ = sensor.get_rpm()
+            wheel_rpm, motor_rpm = sensor.get_rpm()
             if wheel_rpm is not None and wheel_rpm < cutoff:
                 break
             self.reactor.pause(self.reactor.monotonic() + 0.1)
 
         # 5) Stop the respooler
+        # Report actual wheel and motor RPM at tension detection
+        self.gcode.respond_info(f"Wheel RPM: {wheel_rpm:.1f}  |  Motor RPM: {motor_rpm:.1f}")
         self.assist(0)
         self.gcode.respond_info(f"{self.name}: Tension detected (RPM < {cutoff:.1f}); rewind stopped.")
 
