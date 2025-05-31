@@ -15,6 +15,9 @@ try:
 except:
     raise error("Error trying to import AFC_utils, please rerun install-afc.sh script in your AFC-Klipper-Add-On directory then restart klipper")
 
+from extras.wheel_sensor import StandaloneWheelSensor
+import time
+
 #LED
 BACKGROUND_PRIORITY_CLOCK = 0x7fffffff00000000
 BIT_MAX_TIME=.000004
@@ -158,6 +161,23 @@ class AFCExtruderStepper:
         if self.afc_motor_enb is not None:
             self.afc_motor_enb = AFC_assist.AFCassistMotor(config, 'enb')
 
+        # ____________Lookup wheel_sensor for tension-based rewind______________________________
+        self.wheel_sensor = None
+        sensor_cfg = config.get('wheel_sensor', None)
+        if sensor_cfg:
+            try:
+                # Expecting a [wheel_sensor <sensor_cfg>] section
+                self.wheel_sensor = self.printer.lookup_object(f"wheel_sensor {sensor_cfg}")
+            except:
+                self.logger.info(f"{self.name}: No wheel_sensor named '{sensor_cfg}' found; tension detection disabled.")
+
+        # Tension detection parameters (defaults: 5 RPM baseline, 75% drop, 10s max)
+        self.tension_baseline_min_rpm = config.getfloat('tension_baseline_min_rpm', 5.0)
+        self.tension_drop_fraction   = config.getfloat('tension_drop_fraction',   0.75)
+        self.tension_max_time        = config.getfloat('tension_max_time',        10.0)
+
+         # ____________Lookup wheel_sensor for tension-based rewind # Lookup wheel_sensor for tension-based rewind__________________
+
         self.tmc_print_current = config.getfloat("print_current", self.AFC.global_print_current)    # Current to use while printing, set to a lower current to reduce stepper heat when printing. Defaults to global_print_current, if not specified current is not changed.
         self._get_tmc_values( config )
 
@@ -190,6 +210,59 @@ class AFCExtruderStepper:
         self.connect_done = False
         self.prep_active = False
         self.last_prep_time = 0
+
+
+
+
+
+
+    def rewind_until_tension(self, speed):
+        """
+        Spin the respooler backward until wheel RPM drops below threshold (baseline * drop_fraction).
+        """
+        sensor = self.wheel_sensor
+        if sensor is None or self.afc_motor_rwd is None:
+            self.logger.info(f"{self.name}: Cannot perform tension-based rewind (sensor or motor missing).")
+            return
+
+        # 1) Compute rewind PWM (negative)
+        pwm_val = self.calculate_pwm_value(speed, rewind=True)
+        if pwm_val > 1.0:
+            pwm_val = 1.0
+        pwm_val = -pwm_val
+
+        # 2) Start the respooler spinning backward
+        self.assist(pwm_val)
+
+        # 3) Capture baseline RPM (wait for free spin above min RPM)
+        start_time = self.reactor.monotonic()
+        baseline_rpm = None
+        while (self.reactor.monotonic() - start_time) < 2.0:
+            wheel_rpm, _ = sensor.get_rpm()
+            if wheel_rpm is not None and wheel_rpm > self.tension_baseline_min_rpm:
+                baseline_rpm = wheel_rpm
+                break
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+
+        if baseline_rpm is None:
+            self.assist(0)
+            self.logger.info(f"{self.name}: Baseline RPM not found; stopping rewind.")
+            return
+
+        # 4) Continue rewinding until RPM < baseline * drop_fraction
+        cutoff = baseline_rpm * self.tension_drop_fraction
+        while (self.reactor.monotonic() - start_time) < self.tension_max_time:
+            wheel_rpm, _ = sensor.get_rpm()
+            if wheel_rpm is not None and wheel_rpm < cutoff:
+                break
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+
+        # 5) Stop the respooler
+        self.assist(0)
+        self.gcode.respond_info(f"{self.name}: Tension detected (RPM < {cutoff:.1f}); rewind stopped.")
+
+
+
 
     def __str__(self):
         return self.name
@@ -392,29 +465,29 @@ class AFCExtruderStepper:
     @contextmanager
     def assist_move(self, speed, rewind, assist_active=True):
         """
-        Starts an assist move and returns a context manager that turns off the assist move when it exist.
-        :param speed:         The speed of the move
-        :param rewind:        True for a rewind, False for a forward assist
-        :param assist_active: Whether to assist
-        :return:              the Context manager
+        Starts an assist move and returns a context manager that turns off the assist move when it exits.
+         - For forward assist (rewind=False), uses the existing PWM-based assist logic.
+         - For rewind (rewind=True) and a wheel_sensor configured, performs tension-based rewind.
         """
         if assist_active:
-            if rewind:
-                # Calculate Rewind Speed
-                value = self.calculate_pwm_value(speed, True) * -1
+            if rewind and self.wheel_sensor:
+                # Perform tension-based rewind, then exit immediately
+                self.rewind_until_tension(speed)
+                yield
+                return
             else:
-                # Calculate Forward Assist Speed
-                value = self.calculate_pwm_value(speed)
-
-            # Clamp value to a maximum of 1
-            if value > 1:
-                value = 1
-
-            self.assist(value)
+                if rewind:
+                    value = self.calculate_pwm_value(speed, True) * -1
+                else:
+                    value = self.calculate_pwm_value(speed)
+                if value > 1.0:
+                    value = 1.0
+                self.assist(value)
         try:
             yield
         finally:
-            if assist_active:
+            # Only stop motor here if we didn't do a tension-based rewind above
+            if assist_active and not (rewind and self.wheel_sensor):
                 self.assist(0)
 
     def _move(self, distance, speed, accel, assist_active=False):
