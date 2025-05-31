@@ -10,14 +10,10 @@ from contextlib import contextmanager
 from kinematics import extruder
 from . import AFC_assist
 from configfile import error
-from extras.closed_loop_spooler import AFCClosedLoopController
-from extras.wheel_sensor import StandaloneWheelSensor
 try:
     from extras.AFC_utils import add_filament_switch
 except:
     raise error("Error trying to import AFC_utils, please rerun install-afc.sh script in your AFC-Klipper-Add-On directory then restart klipper")
-
-
 
 #LED
 BACKGROUND_PRIORITY_CLOCK = 0x7fffffff00000000
@@ -56,40 +52,6 @@ def calc_move_time(dist, speed, accel):
 
 class AFCExtruderStepper:
     def __init__(self, config):
-
-#________
-
-        self.closed_loop_enabled = config.getboolean("assist_closed_loop", False)
-        self.closed_loop_ratio = config.getfloat("assist_closed_loop_ratio", 1.0)
-        self.closed_loop_kp = config.getfloat("assist_closed_loop_kp", 0.1)
-        self.closed_loop_ki = config.getfloat("assist_closed_loop_ki", 0.01)
-        self.closed_loop_kd = config.getfloat("assist_closed_loop_kd", 0.0)
-        self.closed_loop_sample_t = config.getfloat("assist_closed_loop_sample_time", 0.2)
-
-        self.closed_loop_controller = None
-
-        if self.closed_loop_enabled and self.afc_motor_fwd is not None:
-            # Find wheel sensor object (by name, e.g., wheel_sensor:lane1)
-            sensor_name = config.get("assist_closed_loop_sensor", f"wheel_sensor {self.name}")
-            try:
-                self.wheel_sensor = self.printer.lookup_object(sensor_name)
-            except Exception as e:
-                self.wheel_sensor = None
-                self.logger.warn(f"Closed loop enabled but could not find wheel sensor '{sensor_name}': {e}")
-            if self.wheel_sensor:
-                self.closed_loop_controller = AFCClosedLoopController(
-                    printer=self.printer,
-                    afc_motor=self.afc_motor_fwd,
-                    wheel_sensor=self.wheel_sensor,
-                    ratio=self.closed_loop_ratio,
-                    kp=self.closed_loop_kp,
-                    ki=self.closed_loop_ki,
-                    kd=self.closed_loop_kd,
-                    sample_t=self.closed_loop_sample_t
-                )
-
-#________
-
         self.printer            = config.get_printer()
         self.AFC                = self.printer.lookup_object('AFC')
         self.gcode              = self.printer.lookup_object('gcode')
@@ -427,34 +389,32 @@ class AFCExtruderStepper:
         self.AFC.toolhead.register_lookahead_callback(
             lambda print_time: assit_motor._set_pin(print_time, value))
 
-@contextmanager
-def assist_move(self, speed, rewind, assist_active=True):
-    """
-    Starts an assist move (forward or rewind) and returns a context manager
-    """
-    use_closed_loop = self.closed_loop_enabled and self.closed_loop_controller and not rewind
-    if assist_active:
-        if use_closed_loop:
-            # Set target RPM based on extruder or feed rate and ratio
-            # You must determine target_rpm calculation logic:
-            target_rpm = speed * self.closed_loop_ratio  # Example logic; adjust for your needs
-            self.closed_loop_controller.enable(target_rpm)
-        else:
-            # Fallback to old PWM logic
+    @contextmanager
+    def assist_move(self, speed, rewind, assist_active=True):
+        """
+        Starts an assist move and returns a context manager that turns off the assist move when it exist.
+        :param speed:         The speed of the move
+        :param rewind:        True for a rewind, False for a forward assist
+        :param assist_active: Whether to assist
+        :return:              the Context manager
+        """
+        if assist_active:
             if rewind:
+                # Calculate Rewind Speed
                 value = self.calculate_pwm_value(speed, True) * -1
             else:
+                # Calculate Forward Assist Speed
                 value = self.calculate_pwm_value(speed)
+
+            # Clamp value to a maximum of 1
             if value > 1:
                 value = 1
+
             self.assist(value)
-    try:
-        yield
-    finally:
-        if assist_active:
-            if use_closed_loop:
-                self.closed_loop_controller.disable()
-            else:
+        try:
+            yield
+        finally:
+            if assist_active:
                 self.assist(0)
 
     def _move(self, distance, speed, accel, assist_active=False):
@@ -525,7 +485,6 @@ def assist_move(self, speed, rewind, assist_active=True):
     def load_callback(self, eventtime, state):
         self.load_state = state
 
-    # --- prep_callback for AFCExtruderStepper ---
     def prep_callback(self, eventtime, state):
         self.prep_state = state
 
@@ -535,7 +494,7 @@ def assist_move(self, speed, rewind, assist_active=True):
         if self.prep_active:
             return
 
-        if self.hub == 'direct' and not self.AFC.FUNCTION.is_homed():
+        if self.hub =='direct' and not self.AFC.FUNCTION.is_homed():
             self.AFC.ERROR.AFC_error("Please home printer before directly loading to toolhead", False)
             return False
 
@@ -543,36 +502,44 @@ def assist_move(self, speed, rewind, assist_active=True):
 
         # Checking to make sure printer is ready and making sure PREP has been called before trying to load anything
         for i in range(1):
+        # Hacky way for do{}while(0) loop, DO NOT return from this for loop, use break instead so that self.prep_state variable gets sets correctly
+        #  before exiting function
             if self.printer.state_message == 'Printer is ready' and True == self._afc_prep_done and self.status != 'Tool Unloading':
                 # Only try to load when load state trigger is false
                 if self.prep_state == True and self.load_state == False:
                     x = 0
+                    # Checking to make sure last time prep switch was activated was less than 1 second, returning to keep is printing message from spamming
+                    # the console since it takes klipper some time to transition to idle when idle_resume=printing
                     if delta_time < 1.0:
                         break
 
+                    # Check to see if the printer is printing or moving, as trying to load while printer is doing something will crash klipper
                     if self.AFC.FUNCTION.is_printing(check_movement=True):
                         self.AFC.ERROR.AFC_error("Cannot load spools while printer is actively moving or homing", False)
                         break
 
-                    while self.load_state == False and self.prep_state == True and self.load is not None:
+                    while self.load_state == False and self.prep_state == True and self.load != None:
                         x += 1
                         self.do_enable(True)
-                        self.move(10, 500, 400)
+                        self.move(10,500,400)
                         self.reactor.pause(self.reactor.monotonic() + 0.1)
-                        if x > 40:
+                        if x> 40:
                             msg = (' FAILED TO LOAD, CHECK FILAMENT AT TRIGGER\n||==>--||----||------||\nTRG   LOAD   HUB    TOOL')
                             self.AFC.ERROR.AFC_error(msg, False)
                             self.AFC.FUNCTION.afc_led(self.AFC.led_fault, self.led_index)
-                            self.status = ''
+                            self.status=''
                             break
-                    self.status = ''
+                    self.status=''
 
+                    # Verify that load state is still true as this would still trigger if prep sensor was triggered and then filament was removed
+                    #   This is only really a issue when using direct and still using load sensor
                     if self.hub == 'direct' and self.prep_state:
                         self.AFC.afcDeltaTime.set_start_time()
                         self.AFC.TOOL_LOAD(self)
                         self.material = self.AFC.default_material_type
                         break
 
+                    # Checking if loaded to hub(it should not be since filament was just inserted), if false load to hub. Does a fast load if hub distance is over 200mm
                     if self.load_to_hub and not self.loaded_to_hub and self.load_state and self.prep_state:
                         self.move(self.dist_hub, self.dist_hub_move_speed, self.dist_hub_move_accel, self.dist_hub > 200)
                         self.loaded_to_hub = True
@@ -584,28 +551,43 @@ def assist_move(self, speed, rewind, assist_active=True):
                         self.material = self.AFC.default_material_type
 
                 elif self.prep_state == False and self.name == self.AFC.current and self.AFC.FUNCTION.is_printing() and self.load_state and self.status != 'ejecting':
-                    if self.runout_lane != 'NONE':
+                    # Checking to make sure runout_lane is set and does not equal 'NONE'
+                    if  self.runout_lane != 'NONE':
                         self.status = None
                         self.AFC.FUNCTION.afc_led(self.AFC.led_not_ready, self.led_index)
                         self.logger.info("Infinite Spool triggered for {}".format(self.name))
                         empty_LANE = self.AFC.lanes[self.AFC.current]
                         change_LANE = self.AFC.lanes[self.runout_lane]
+                        # Pause printer with manual command
                         self.AFC.ERROR.pause_resume.send_pause_command()
+                        # Saving position after printer is paused
                         self.AFC.save_pos()
+                        # Change Tool and don't restore position. Position will be restored after lane is unloaded
+                        #  so that nozzle does not sit on print while lane is unloading
                         self.AFC.CHANGE_TOOL(change_LANE, restore_pos=False)
+                        # Change Mapping
                         self.gcode.run_script_from_command('SET_MAP LANE={} MAP={}'.format(change_LANE.name, empty_LANE.map))
+                        # Only continue if a error did not happen
                         if not self.AFC.error_state:
+                            # Eject lane from BT
                             self.gcode.run_script_from_command('LANE_UNLOAD LANE={}'.format(empty_LANE.name))
+                            # Resume pos
                             self.AFC.restore_pos()
+                            # Resume with manual issued command
                             self.AFC.ERROR.pause_resume.send_resume_command()
+                            # Set LED to not ready
                             self.AFC.FUNCTION.afc_led(self.led_not_ready, self.led_index)
                     else:
+                        # Unload if user has set AFC to unload on runout
                         if self.unit_obj.unload_on_runout:
+                            # Pause printer
                             self.AFC.ERROR.pause_resume.send_pause_command()
                             self.AFC.save_pos()
+                            # self.gcode.run_script_from_command('PAUSE')
                             self.AFC.TOOL_UNLOAD(self)
                             if not self.AFC.error_state:
                                 self.AFC.LANE_UNLOAD(self)
+                        # Pause print
                         self.status = None
                         msg = "Runout triggered for lane {} and runout lane is not setup to switch to another lane".format(self.name)
                         msg += "\nPlease manually load next spool into toolhead and then hit resume to continue"
