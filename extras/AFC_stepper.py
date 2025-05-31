@@ -10,10 +10,14 @@ from contextlib import contextmanager
 from kinematics import extruder
 from . import AFC_assist
 from configfile import error
+from extras.closed_loop_spooler import AFCClosedLoopController
+from extras.wheel_sensor import StandaloneWheelSensor
 try:
     from extras.AFC_utils import add_filament_switch
 except:
     raise error("Error trying to import AFC_utils, please rerun install-afc.sh script in your AFC-Klipper-Add-On directory then restart klipper")
+
+
 
 #LED
 BACKGROUND_PRIORITY_CLOCK = 0x7fffffff00000000
@@ -52,6 +56,40 @@ def calc_move_time(dist, speed, accel):
 
 class AFCExtruderStepper:
     def __init__(self, config):
+
+#________
+
+        self.closed_loop_enabled = config.getboolean("assist_closed_loop", False)
+        self.closed_loop_ratio = config.getfloat("assist_closed_loop_ratio", 1.0)
+        self.closed_loop_kp = config.getfloat("assist_closed_loop_kp", 0.1)
+        self.closed_loop_ki = config.getfloat("assist_closed_loop_ki", 0.01)
+        self.closed_loop_kd = config.getfloat("assist_closed_loop_kd", 0.0)
+        self.closed_loop_sample_t = config.getfloat("assist_closed_loop_sample_time", 0.2)
+
+        self.closed_loop_controller = None
+
+        if self.closed_loop_enabled and self.afc_motor_fwd is not None:
+            # Find wheel sensor object (by name, e.g., wheel_sensor:lane1)
+            sensor_name = config.get("assist_closed_loop_sensor", f"wheel_sensor {self.name}")
+            try:
+                self.wheel_sensor = self.printer.lookup_object(sensor_name)
+            except Exception as e:
+                self.wheel_sensor = None
+                self.logger.warn(f"Closed loop enabled but could not find wheel sensor '{sensor_name}': {e}")
+            if self.wheel_sensor:
+                self.closed_loop_controller = AFCClosedLoopController(
+                    printer=self.printer,
+                    afc_motor=self.afc_motor_fwd,
+                    wheel_sensor=self.wheel_sensor,
+                    ratio=self.closed_loop_ratio,
+                    kp=self.closed_loop_kp,
+                    ki=self.closed_loop_ki,
+                    kd=self.closed_loop_kd,
+                    sample_t=self.closed_loop_sample_t
+                )
+
+#________
+
         self.printer            = config.get_printer()
         self.AFC                = self.printer.lookup_object('AFC')
         self.gcode              = self.printer.lookup_object('gcode')
@@ -389,32 +427,34 @@ class AFCExtruderStepper:
         self.AFC.toolhead.register_lookahead_callback(
             lambda print_time: assit_motor._set_pin(print_time, value))
 
-    @contextmanager
-    def assist_move(self, speed, rewind, assist_active=True):
-        """
-        Starts an assist move and returns a context manager that turns off the assist move when it exist.
-        :param speed:         The speed of the move
-        :param rewind:        True for a rewind, False for a forward assist
-        :param assist_active: Whether to assist
-        :return:              the Context manager
-        """
-        if assist_active:
+@contextmanager
+def assist_move(self, speed, rewind, assist_active=True):
+    """
+    Starts an assist move (forward or rewind) and returns a context manager
+    """
+    use_closed_loop = self.closed_loop_enabled and self.closed_loop_controller and not rewind
+    if assist_active:
+        if use_closed_loop:
+            # Set target RPM based on extruder or feed rate and ratio
+            # You must determine target_rpm calculation logic:
+            target_rpm = speed * self.closed_loop_ratio  # Example logic; adjust for your needs
+            self.closed_loop_controller.enable(target_rpm)
+        else:
+            # Fallback to old PWM logic
             if rewind:
-                # Calculate Rewind Speed
                 value = self.calculate_pwm_value(speed, True) * -1
             else:
-                # Calculate Forward Assist Speed
                 value = self.calculate_pwm_value(speed)
-
-            # Clamp value to a maximum of 1
             if value > 1:
                 value = 1
-
             self.assist(value)
-        try:
-            yield
-        finally:
-            if assist_active:
+    try:
+        yield
+    finally:
+        if assist_active:
+            if use_closed_loop:
+                self.closed_loop_controller.disable()
+            else:
                 self.assist(0)
 
     def _move(self, distance, speed, accel, assist_active=False):
