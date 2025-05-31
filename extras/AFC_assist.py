@@ -54,13 +54,13 @@ class AFCassistMotor:
         self.mcu_pin.setup_start_value(self.last_value, self.shutdown_value)
     
     # ───────────────────────── public api ───────────────────────────
-    SAFE_MARGIN = 0.100  # Adjust if needed
-
     def set_pwm(self, ratio):
         ratio = max(0.0, min(1.0, ratio))
-        # Add margin to avoid timer-too-close error:
-        print_time = self.mcu_pin.get_mcu().estimated_print_time(
-            self.reactor.monotonic() + SAFE_MARGIN)
+        # Calculate a "safe" print_time that is always at least 0.100s in the future from the MCU's clock.
+        mcu = self.mcu_pin.get_mcu()
+        now_mcu = mcu.print_time_to_clock(self.reactor.monotonic())
+        SAFE_MARGIN = 0.100
+        print_time = mcu.clock_to_print_time(now_mcu + SAFE_MARGIN)
         self._set_pin(print_time, ratio)
   # ───────────────────────── public api ────────────────────────────
 
