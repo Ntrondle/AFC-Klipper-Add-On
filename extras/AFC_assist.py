@@ -52,7 +52,19 @@ class AFCassistMotor:
             self.shutdown_value = config.getfloat(
                 'shutdown_value', 0., minval=0., maxval=self.scale) / self.scale
         self.mcu_pin.setup_start_value(self.last_value, self.shutdown_value)
-
+    
+    # ───────────────────────── public api ────────────────────────────
+    def set_pwm(self, ratio):
+        """
+        Set motor PWM duty-cycle (0.0 – 1.0).  
+        Used by ClosedLoopSpooler for real-time speed regulation.
+        """
+        ratio = max(0.0, min(1.0, ratio))
+        print_time = self.mcu_pin.get_mcu().estimated_print_time(
+            self.reactor.monotonic())
+        self._set_pin(print_time, ratio)
+  # ───────────────────────── public api ────────────────────────────
+  
     def get_status(self, eventtime):
         return {'value': self.last_value}
 
