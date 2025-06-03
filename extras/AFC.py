@@ -167,6 +167,10 @@ class afc:
         self.bypass_pause           = config.getboolean("pause_when_bypass_active", False) # When true AFC pauses print when change tool is called and bypass is loaded
         self.unload_on_runout       = config.getboolean("unload_on_runout", False)  # When True AFC will unload lane and then pause when runout is triggered and spool to swap to is not set(infinite spool)
 
+        # Require the printer to be homed before performing tool operations
+        # (load/unload/change). Set to False to bypass the homing check.
+        self.require_home           = config.getboolean("require_home", True)
+
         self.debug                  = config.getboolean('debug', False)             # Setting to True turns on more debugging to show on console
         # Get debug and cast to boolean
         self.logger.set_debug( self.debug )
@@ -791,7 +795,7 @@ class afc:
 
         :return bool: True if load was successful, False if an error occurred.
         """
-        if not self.FUNCTION.is_homed():
+        if self.require_home and not self.FUNCTION.is_homed():
             self.ERROR.AFC_error("Please home printer before doing a tool load", False)
             return False
 
@@ -1025,7 +1029,7 @@ class afc:
         # Check if the bypass filament sensor detects filament; if so unload filament and abort the tool load.
         if self._check_bypass(unload=True): return False
 
-        if not self.FUNCTION.is_homed():
+        if self.require_home and not self.FUNCTION.is_homed():
             self.ERROR.AFC_error("Please home printer before doing a tool unload", False)
             return False
 
@@ -1261,7 +1265,7 @@ class afc:
         # Check if the bypass filament sensor detects filament; if so, abort the tool change.
         if self._check_bypass(unload=False): return
 
-        if not self.FUNCTION.is_homed():
+        if self.require_home and not self.FUNCTION.is_homed():
             self.ERROR.AFC_error("Please home printer before doing a tool change", False)
             return
 
