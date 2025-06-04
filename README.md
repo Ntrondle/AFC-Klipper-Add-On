@@ -48,6 +48,7 @@ Full options for the `install-afc.sh` script can be found by running the followi
 ### Optional Configuration
 
 `require_home` *(default: True)* – When set to `False`, AFC will allow tool load, unload and change operations without requiring the printer to be homed first.
+`wheel_follow_assist` *(default: False)* – Enable automatic forward assist based on wheel sensor pulses. When `True`, the respooler engages when wheel RPM exceeds `wheel_follow_min_rpm` using a PWM value from `wheel_follow_pwm`.
 
 
 ## Updates
