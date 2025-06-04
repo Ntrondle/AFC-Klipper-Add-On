@@ -80,16 +80,17 @@ class afc_hub:
 
         # Prep the servo for cutting.
         self.gcode.run_script_from_command(servo_string.format(angle=self.cut_servo_prep_angle))
-        # Load the lane until the hub is triggered.
-        while not self.state:
-            CUR_LANE.move( self.move_dis, CUR_LANE.short_moves_speed, CUR_LANE.short_moves_accel)
-
-        # To have an accurate reference position for `hub_cut_dist`, move back and forth in smaller steps
-        # to find the point where the hub just triggers.
-        while self.state:
-            CUR_LANE.move(-10, CUR_LANE.short_moves_speed, CUR_LANE.short_moves_accel, self.assisted_retract)
-        while not self.state:
-            CUR_LANE.move(2, CUR_LANE.short_moves_speed, CUR_LANE.short_moves_accel)
+        # If no hub sensor is available, skip the alignment procedure.
+        if getattr(self, "switch_pin", None) is None or not self.AFC.require_hub_sensor:
+            CUR_LANE.move(self.move_dis, CUR_LANE.short_moves_speed, CUR_LANE.short_moves_accel)
+        else:
+            # Load the lane until the hub is triggered and then find the trigger point
+            while not self.state:
+                CUR_LANE.move(self.move_dis, CUR_LANE.short_moves_speed, CUR_LANE.short_moves_accel)
+            while self.state:
+                CUR_LANE.move(-10, CUR_LANE.short_moves_speed, CUR_LANE.short_moves_accel, self.assisted_retract)
+            while not self.state:
+                CUR_LANE.move(2, CUR_LANE.short_moves_speed, CUR_LANE.short_moves_accel)
 
         # Feed the `hub_cut_dist` amount.
         CUR_LANE.move( self.cut_dist, CUR_LANE.short_moves_speed, CUR_LANE.short_moves_accel)

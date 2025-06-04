@@ -15,8 +15,6 @@ try:
 except:
     raise error("Error trying to import AFC_utils, please rerun install-afc.sh script in your AFC-Klipper-Add-On directory then restart klipper")
 
-from extras.wheel_sensor import StandaloneWheelSensor
-import time
 
 #LED
 BACKGROUND_PRIORITY_CLOCK = 0x7fffffff00000000
@@ -255,10 +253,19 @@ class AFCExtruderStepper:
 
         # 4) Continue rewinding until RPM < baseline * drop_fraction
         cutoff = baseline_rpm * self.tension_drop_fraction
+        target_rpm = baseline_rpm
         while (self.reactor.monotonic() - start_time) < self.tension_max_time:
             wheel_rpm, motor_rpm = sensor.get_rpm()
-            if wheel_rpm is not None and wheel_rpm < cutoff:
-                break
+            if wheel_rpm is not None:
+                # Adjust PWM to keep wheel RPM near the target
+                if wheel_rpm < target_rpm * 0.9:
+                    pwm_val = max(pwm_val - 0.05, -1.0)
+                    self.assist(pwm_val)
+                elif wheel_rpm > target_rpm * 1.1:
+                    pwm_val = min(pwm_val + 0.05, 0.0)
+                    self.assist(pwm_val)
+                if wheel_rpm < cutoff:
+                    break
             self.reactor.pause(self.reactor.monotonic() + 0.1)
 
         # 5) Stop the respooler
@@ -573,7 +580,7 @@ class AFCExtruderStepper:
         if self.prep_active:
             return
 
-        if self.hub =='direct' and not self.AFC.FUNCTION.is_homed():
+        if self.hub == 'direct' and self.AFC.require_home and not self.AFC.FUNCTION.is_homed():
             self.AFC.ERROR.AFC_error("Please home printer before directly loading to toolhead", False)
             return False
 
