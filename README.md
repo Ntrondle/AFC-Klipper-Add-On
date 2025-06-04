@@ -49,6 +49,7 @@ Full options for the `install-afc.sh` script can be found by running the followi
 
 `require_home` *(default: True)* – When set to `False`, AFC will allow tool load, unload and change operations without requiring the printer to be homed first.
 
+
 ## Updates
 
 To update the AFC plugin software, you can simply run the following command:
