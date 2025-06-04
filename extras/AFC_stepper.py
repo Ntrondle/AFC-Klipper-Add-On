@@ -159,6 +159,14 @@ class AFCExtruderStepper:
         if self.afc_motor_enb is not None:
             self.afc_motor_enb = AFC_assist.AFCassistMotor(config, 'enb')
 
+        # Optional wheel-follow assist during printing
+        self.wheel_follow_assist = config.getboolean(
+            "wheel_follow_assist", False
+        )
+        self.wheel_follow_pwm = config.getfloat("wheel_follow_pwm", 0.3)
+        self.wheel_follow_min_rpm = config.getfloat("wheel_follow_min_rpm", 1.0)
+        self._wheel_follow_paused = False
+
         # ____________Lookup wheel_sensor for tension-based rewind______________________________
         self.wheel_sensor = None
         sensor_cfg = config.get('wheel_sensor', None)
@@ -292,6 +300,9 @@ class AFCExtruderStepper:
             error_string, led = self.AFC.FUNCTION.verify_led_object(self.led_index)
             if led is None:
                 raise error(error_string)
+
+        if self.wheel_follow_assist and self.wheel_sensor:
+            self.reactor.register_timer(self._wheel_follow_handler, self.reactor.NOW)
 
     def handle_unit_connect(self, unit_obj):
         """
@@ -483,10 +494,12 @@ class AFCExtruderStepper:
          - For rewind (rewind=True) and a wheel_sensor configured, performs tension-based rewind.
         """
         if assist_active:
+            self._wheel_follow_paused = True
             if rewind and self.wheel_sensor:
                 # Perform tension-based rewind, then exit immediately
                 self.rewind_until_tension(speed)
                 yield
+                self._wheel_follow_paused = False
                 return
             else:
                 if rewind:
@@ -502,6 +515,23 @@ class AFCExtruderStepper:
             # Only stop motor here if we didn't do a tension-based rewind above
             if assist_active and not (rewind and self.wheel_sensor):
                 self.assist(0)
+            self._wheel_follow_paused = False
+
+    def _wheel_follow_handler(self, eventtime):
+        if self._wheel_follow_paused:
+            return eventtime + 0.1
+
+        rpm, _ = (self.wheel_sensor.get_rpm() if self.wheel_sensor else (None, None))
+        if rpm is not None and rpm >= self.wheel_follow_min_rpm:
+            if not self.assist_activate:
+                pwm = max(0.0, min(self.wheel_follow_pwm, 1.0))
+                self.assist(pwm)
+                self.assist_activate = True
+        else:
+            if self.assist_activate:
+                self.assist(0)
+                self.assist_activate = False
+        return eventtime + 0.1
 
     def _move(self, distance, speed, accel, assist_active=False):
         """

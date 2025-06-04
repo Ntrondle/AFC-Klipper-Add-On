@@ -171,6 +171,13 @@ class afc:
         # (load/unload/change). Set to False to bypass the homing check.
         self.require_home           = config.getboolean("require_home", True)
 
+         0zq7n0-codex/proposer-intégration-capteur-effet-hall-avec-klipper
+        # Require hub filament sensors to be present when loading or unloading.
+        # Set to False to skip checks for hub sensors.
+        self.require_hub_sensor     = config.getboolean("require_hub_sensor", True)
+
+
+      main
         self.debug                  = config.getboolean('debug', False)             # Setting to True turns on more debugging to show on console
         # Get debug and cast to boolean
         self.logger.set_debug( self.debug )
@@ -674,10 +681,13 @@ class afc:
                 CUR_LANE.move( CUR_HUB.move_dis, CUR_LANE.short_moves_speed, CUR_LANE.short_moves_accel)
         if CUR_LANE.loaded_to_hub == False:
             CUR_LANE.move(CUR_LANE.dist_hub, CUR_LANE.dist_hub_move_speed, CUR_LANE.dist_hub_move_accel, True if CUR_LANE.dist_hub > 200 else False)
-        while CUR_HUB.state == False:
-            CUR_LANE.move(CUR_HUB.move_dis, CUR_LANE.short_moves_speed, CUR_LANE.short_moves_accel)
-        while CUR_HUB.state == True:
-            CUR_LANE.move(CUR_HUB.move_dis * -1, CUR_LANE.short_moves_speed, CUR_LANE.short_moves_accel)
+        need_hub_check = self.require_hub_sensor and getattr(CUR_HUB, "switch_pin", None) is not None
+
+        if need_hub_check:
+            while CUR_HUB.state is False:
+                CUR_LANE.move(CUR_HUB.move_dis, CUR_LANE.short_moves_speed, CUR_LANE.short_moves_accel)
+            while CUR_HUB.state is True:
+                CUR_LANE.move(CUR_HUB.move_dis * -1, CUR_LANE.short_moves_speed, CUR_LANE.short_moves_accel)
         CUR_LANE.status = None
         CUR_LANE.do_enable(False)
         CUR_LANE.loaded_to_hub = True
@@ -824,8 +834,13 @@ class afc:
         self.save_vars()
         self.FUNCTION.afc_led(CUR_LANE.led_loading, CUR_LANE.led_index)
 
-        # Check if the lane is in a state ready to load and hub is clear.
-        if (CUR_LANE.load_state and not CUR_HUB.state) or CUR_LANE.hub == 'direct':
+        # Check if the lane is in a state ready to load and hub is clear. When
+        # hub sensors are disabled or not present, skip the hub check.
+        hub_clear = True
+        if self.require_hub_sensor and getattr(CUR_HUB, "switch_pin", None) is not None:
+            hub_clear = not CUR_HUB.state
+
+        if (CUR_LANE.load_state and hub_clear) or CUR_LANE.hub == 'direct':
 
             if self._check_extruder_temp(CUR_LANE):
                 self.afcDeltaTime.log_with_time("Done heating toolhead")
@@ -841,8 +856,15 @@ class afc:
             CUR_LANE.loaded_to_hub = True
             hub_attempts = 0
 
-            # Ensure filament moves past the hub.
-            while not CUR_HUB.state and CUR_LANE.hub != 'direct':
+            # Ensure filament moves past the hub if a hub sensor is present and
+            # required.
+            need_hub_check = (
+                self.require_hub_sensor
+                and CUR_LANE.hub != "direct"
+                and getattr(CUR_HUB, "switch_pin", None) is not None
+            )
+
+            while need_hub_check and not CUR_HUB.state:
                 if hub_attempts == 0:
                     CUR_LANE.move(CUR_HUB.move_dis, CUR_LANE.short_moves_speed, CUR_LANE.short_moves_accel)
                 else:
@@ -969,7 +991,7 @@ class afc:
 
         else:
             # Handle errors if the hub is not clear or the lane is not ready for loading.
-            if CUR_HUB.state:
+            if self.require_hub_sensor and getattr(CUR_HUB, "switch_pin", None) is not None and CUR_HUB.state:
                 message = 'Hub not clear when trying to load.\nPlease check that hub does not contain broken filament and is clear'
                 if self.FUNCTION.in_print():
                     message += '\nOnce issue is resolved please manually load {} with {} macro and click resume to continue printing.'.format(CUR_LANE.name, CUR_LANE.map)
@@ -1182,7 +1204,9 @@ class afc:
 
         # Ensure filament is fully cleared from the hub.
         num_tries = 0
-        while CUR_HUB.state:
+        need_hub_check = self.require_hub_sensor and getattr(CUR_HUB, "switch_pin", None) is not None
+
+        while need_hub_check and CUR_HUB.state:
             CUR_LANE.move(CUR_LANE.short_move_dis * -1, CUR_LANE.short_moves_speed, CUR_LANE.short_moves_accel, True)
             num_tries += 1
             if num_tries > (CUR_HUB.afc_unload_bowden_length / CUR_LANE.short_move_dis):
@@ -1212,8 +1236,10 @@ class afc:
                 else:
                     self.gcode.run_script_from_command(CUR_HUB.cut_cmd)
 
-                # Confirm the hub is clear after the cut.
-                while CUR_HUB.state:
+                # Confirm the hub is clear after the cut if sensor is present.
+                need_hub_check = self.require_hub_sensor and getattr(CUR_HUB, "switch_pin", None) is not None
+
+                while need_hub_check and CUR_HUB.state:
                     CUR_LANE.move(CUR_LANE.short_move_dis * -1, CUR_LANE.short_moves_speed, CUR_LANE.short_moves_accel, True)
                     num_tries += 1
                     # TODO: Figure out max number of tries
