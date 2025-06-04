@@ -476,7 +476,7 @@ class AFCExtruderStepper:
         if self.prep_active:
             return
 
-        if self.hub =='direct' and not self.AFC.FUNCTION.is_homed():
+        if self.hub == 'direct' and self.AFC.require_home and not self.AFC.FUNCTION.is_homed():
             self.AFC.ERROR.AFC_error("Please home printer before directly loading to toolhead", False)
             return False
 
