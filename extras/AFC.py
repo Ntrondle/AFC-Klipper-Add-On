@@ -171,10 +171,13 @@ class afc:
         # (load/unload/change). Set to False to bypass the homing check.
         self.require_home           = config.getboolean("require_home", True)
 
+        00645s-codex/proposer-intégration-capteur-effet-hall-avec-klipper
         # Require hub filament sensors to be present when loading or unloading.
         # Set to False to skip checks for hub sensors.
         self.require_hub_sensor     = config.getboolean("require_hub_sensor", True)
 
+
+        main
         self.debug                  = config.getboolean('debug', False)             # Setting to True turns on more debugging to show on console
         # Get debug and cast to boolean
         self.logger.set_debug( self.debug )
